@@ -4,10 +4,10 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import mkcert from 'vite-plugin-mkcert'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   base: '/prices/',
   plugins: [
-    mkcert(),
+    command === 'serve' ? mkcert() : null,
     react(),
     tailwindcss(),
     VitePWA({
@@ -44,4 +44,4 @@ export default defineConfig({
       },
     }),
   ],
-})
+}))
