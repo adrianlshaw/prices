@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import mkcert from 'vite-plugin-mkcert'
 
 export default defineConfig({
+  base: '/prices/',
   plugins: [
     mkcert(),
     react(),

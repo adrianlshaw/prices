@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@neondatabase/postgrest-js": "^0.2.0-beta",
     "@zxing/browser": "^0.2.0",
     "@zxing/library": "^0.22.0",
     "dexie": "^4.4.3",

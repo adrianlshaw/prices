@@ -5,6 +5,7 @@ import { useOcr } from '../hooks/useOcr';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { fetchOFFName } from '../hooks/useOpenFoodFacts';
 import { saveProduct, savePriceEntry, getProduct, getKnownStores } from '../db';
+import { pushProduct, pushPriceEntry } from '../sync';
 import { useAppStore } from '../store';
 import type { PriceEntry, Product } from '../types';
 import { formatPrice, generateId } from '../utils';
@@ -93,6 +94,7 @@ export default function AddPriceScreen() {
     if (!existingProduct || (!existingProduct.name && productName)) {
       product.name = productName || undefined;
       await saveProduct(product);
+      void pushProduct(product);
     }
 
     const entry: PriceEntry = {
@@ -104,6 +106,7 @@ export default function AddPriceScreen() {
       source: manualMode ? 'manual' : 'ocr',
     };
     await savePriceEntry(entry);
+    void pushPriceEntry(entry);
 
     navigate(`/result/${encodeURIComponent(barcode)}`);
   }

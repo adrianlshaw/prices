@@ -1,14 +1,49 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Download, Trash2, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Download, Trash2, ChevronRight, Cloud, Eye, EyeOff, RefreshCw, Copy, Check } from 'lucide-react';
 import { getAllProducts, deleteProduct, clearAllData, exportAllAsCSV } from '../db';
+import {
+  getNeonApiUrl,
+  getNeonApiKey,
+  setNeonConfig,
+  clearNeonConfig,
+  isNeonConfigured,
+  getNeonClient,
+} from '../neon';
+import { migrateLocalToNeon, pullAndMerge } from '../sync';
 import type { Product } from '../types';
+
+const SETUP_SQL = `CREATE TABLE IF NOT EXISTS products (
+  barcode TEXT PRIMARY KEY,
+  name TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS price_entries (
+  id UUID PRIMARY KEY,
+  barcode TEXT NOT NULL REFERENCES products(barcode) ON DELETE CASCADE,
+  store TEXT NOT NULL,
+  price_pence INTEGER NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('ocr', 'manual'))
+);`;
 
 export default function SettingsScreen() {
   const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // Neon config state
+  const [neonUrl, setNeonUrl] = useState(() => getNeonApiUrl());
+  const [neonKey, setNeonKey] = useState(() => getNeonApiKey());
+  const [showKey, setShowKey] = useState(false);
+  const [neonStatus, setNeonStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>(
+    () => (isNeonConfigured() ? 'ok' : 'idle'),
+  );
+  const [syncing, setSyncing] = useState(false);
+  const [showSql, setShowSql] = useState(false);
+  const [sqlCopied, setSqlCopied] = useState(false);
 
   const load = useCallback(async () => {
     setProducts(await getAllProducts());
@@ -42,6 +77,45 @@ export default function SettingsScreen() {
     await clearAllData();
     setConfirmClear(false);
     await load();
+  }
+
+  async function handleSaveNeon() {
+    const url = neonUrl.trim();
+    const key = neonKey.trim();
+    if (!url || !key) {
+      clearNeonConfig();
+      setNeonStatus('idle');
+      return;
+    }
+    setNeonConfig(url, key);
+    setNeonStatus('testing');
+    try {
+      const client = getNeonClient()!;
+      const { error } = await client.from('products').select('barcode').limit(1);
+      if (error) throw error;
+      setNeonStatus('ok');
+      void migrateLocalToNeon();
+    } catch {
+      setNeonStatus('error');
+    }
+  }
+
+  async function handleSyncNow() {
+    setSyncing(true);
+    try {
+      await pullAndMerge();
+      await load();
+    } catch {
+      // ignore
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function handleCopySql() {
+    void navigator.clipboard.writeText(SETUP_SQL);
+    setSqlCopied(true);
+    setTimeout(() => setSqlCopied(false), 2000);
   }
 
   const filtered = products.filter(
@@ -97,6 +171,120 @@ export default function SettingsScreen() {
           </div>
           <ChevronRight size={18} className="text-gray-500" />
         </button>
+      </div>
+
+      {/* Cloud Sync — Neon */}
+      <div className="px-4 pt-5">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+          Cloud Sync (Neon)
+        </p>
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          {/* Status badge */}
+          <div className="flex items-center gap-2">
+            <Cloud size={16} className={neonStatus === 'ok' ? 'text-green-400' : 'text-gray-500'} />
+            <span className="text-sm text-gray-400">
+              {neonStatus === 'idle' && 'Not configured'}
+              {neonStatus === 'testing' && 'Testing connection…'}
+              {neonStatus === 'ok' && <span className="text-green-400">Connected</span>}
+              {neonStatus === 'error' && <span className="text-red-400">Connection failed — check URL and key</span>}
+            </span>
+          </div>
+
+          {/* Data API URL */}
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">Data API URL</label>
+            <input
+              type="url"
+              value={neonUrl}
+              onChange={(e) => setNeonUrl(e.target.value)}
+              placeholder="https://ep-xxx.apirest.region.aws.neon.tech/dbname/rest/v1"
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
+
+          {/* API Key */}
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">API Key (DB password)</label>
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={neonKey}
+                onChange={(e) => setNeonKey(e.target.value)}
+                placeholder="npg_…"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-10 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 active:text-white p-1"
+                aria-label={showKey ? 'Hide key' : 'Show key'}
+              >
+                {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          {/* Actions row */}
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={() => void handleSaveNeon()}
+              className="flex-1 bg-indigo-600 text-white text-sm font-semibold py-2 rounded-lg active:bg-indigo-700"
+            >
+              {neonStatus === 'testing' ? 'Testing…' : 'Save & Test'}
+            </button>
+            {neonStatus === 'ok' && (
+              <button
+                onClick={() => void handleSyncNow()}
+                disabled={syncing}
+                className="flex items-center gap-1.5 bg-gray-700 text-white text-sm font-semibold px-3 py-2 rounded-lg active:bg-gray-600 disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+                Sync
+              </button>
+            )}
+            {neonStatus === 'ok' && (
+              <button
+                onClick={() => {
+                  clearNeonConfig();
+                  setNeonUrl('');
+                  setNeonKey('');
+                  setNeonStatus('idle');
+                }}
+                className="bg-gray-700 text-red-400 text-sm font-semibold px-3 py-2 rounded-lg active:bg-gray-600"
+              >
+                Disconnect
+              </button>
+            )}
+          </div>
+
+          {/* Setup SQL */}
+          <button
+            onClick={() => setShowSql((v) => !v)}
+            className="text-xs text-gray-500 underline underline-offset-2 active:text-gray-300"
+          >
+            {showSql ? 'Hide setup SQL' : 'Show setup SQL (run once in Neon console)'}
+          </button>
+          {showSql && (
+            <div className="relative mt-1">
+              <pre className="bg-gray-900 rounded-lg p-3 text-xs text-green-300 overflow-x-auto whitespace-pre-wrap">
+                {SETUP_SQL}
+              </pre>
+              <button
+                onClick={handleCopySql}
+                className="absolute top-2 right-2 bg-gray-700 rounded p-1 active:bg-gray-600"
+                aria-label="Copy SQL"
+              >
+                {sqlCopied ? <Check size={14} className="text-green-400" /> : <Copy size={14} className="text-gray-400" />}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Product list */}
