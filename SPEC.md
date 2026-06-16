@@ -103,7 +103,7 @@ The cheapest price per product is `MIN(price)` across all entries. If the user r
 | Concern | Choice | Reason |
 |---|---|---|
 | Framework | **React + Vite** (PWA) | Fast, installable on iPhone home screen |
-| Barcode scanning | **ZXing-js** or **@zxing/browser** | Runs in Safari WebRTC camera stream |
+| Barcode scanning | **ZXing-js** or **@zxing/browser** | Runs in Safari WebRTC camera stream |§
 | Barcode lookup | **Open Food Facts API** | Free, no key required; fetches product name automatically |
 | OCR | **Tesseract.js** (client-side) | No server required; price tags are simple digits |
 | Local database | **IndexedDB via Dexie.js** | Persistent, offline, no backend needed |

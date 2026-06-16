@@ -3,12 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Download, Trash2, ChevronRight, Cloud, Eye, EyeOff, RefreshCw, Copy, Check } from 'lucide-react';
 import { getAllProducts, deleteProduct, clearAllData, exportAllAsCSV } from '../db';
 import {
-  getNeonApiUrl,
-  getNeonApiKey,
-  setNeonConfig,
+  getNeonPassword,
+  setNeonPassword,
   clearNeonConfig,
   isNeonConfigured,
-  getNeonClient,
+  getNeonSql,
 } from '../neon';
 import { migrateLocalToNeon, pullAndMerge } from '../sync';
 import type { Product } from '../types';
@@ -35,8 +34,7 @@ export default function SettingsScreen() {
   const [confirmClear, setConfirmClear] = useState(false);
 
   // Neon config state
-  const [neonUrl, setNeonUrl] = useState(() => getNeonApiUrl());
-  const [neonKey, setNeonKey] = useState(() => getNeonApiKey());
+  const [neonKey, setNeonKey] = useState(() => getNeonPassword());
   const [showKey, setShowKey] = useState(false);
   const [neonStatus, setNeonStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>(
     () => (isNeonConfigured() ? 'ok' : 'idle'),
@@ -80,19 +78,17 @@ export default function SettingsScreen() {
   }
 
   async function handleSaveNeon() {
-    const url = neonUrl.trim();
     const key = neonKey.trim();
-    if (!url || !key) {
+    if (!key) {
       clearNeonConfig();
       setNeonStatus('idle');
       return;
     }
-    setNeonConfig(url, key);
+    setNeonPassword(key);
     setNeonStatus('testing');
     try {
-      const client = getNeonClient()!;
-      const { error } = await client.from('products').select('barcode').limit(1);
-      if (error) throw error;
+      const sql = getNeonSql()!;
+      await sql`SELECT barcode FROM products LIMIT 1`;
       setNeonStatus('ok');
       void migrateLocalToNeon();
     } catch {
@@ -186,28 +182,13 @@ export default function SettingsScreen() {
               {neonStatus === 'idle' && 'Not configured'}
               {neonStatus === 'testing' && 'Testing connection…'}
               {neonStatus === 'ok' && <span className="text-green-400">Connected</span>}
-              {neonStatus === 'error' && <span className="text-red-400">Connection failed — check URL and key</span>}
+              {neonStatus === 'error' && <span className="text-red-400">Connection failed — check password and try again</span>}
             </span>
           </div>
 
-          {/* Data API URL */}
+          {/* DB Password */}
           <div>
-            <label className="text-xs text-gray-500 mb-1 block">Data API URL</label>
-            <input
-              type="url"
-              value={neonUrl}
-              onChange={(e) => setNeonUrl(e.target.value)}
-              placeholder="https://ep-xxx.apirest.region.aws.neon.tech/dbname/rest/v1"
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-          </div>
-
-          {/* API Key */}
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">API Key (DB password)</label>
+            <label className="text-xs text-gray-500 mb-1 block">Database password</label>
             <div className="relative">
               <input
                 type={showKey ? 'text' : 'password'}
@@ -223,7 +204,7 @@ export default function SettingsScreen() {
                 type="button"
                 onClick={() => setShowKey((v) => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 active:text-white p-1"
-                aria-label={showKey ? 'Hide key' : 'Show key'}
+                aria-label={showKey ? 'Hide password' : 'Show password'}
               >
                 {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
@@ -252,7 +233,6 @@ export default function SettingsScreen() {
               <button
                 onClick={() => {
                   clearNeonConfig();
-                  setNeonUrl('');
                   setNeonKey('');
                   setNeonStatus('idle');
                 }}

@@ -1,5 +1,5 @@
 import {
-  getNeonClient,
+  getNeonSql,
   isNeonConfigured,
   wasNeonMigrated,
   markNeonMigrated,
@@ -9,153 +9,88 @@ import {
 import { db } from './db';
 import type { Product, PriceEntry } from './types';
 
-// ── Neon row shapes (snake_case, matches DB columns) ────────────────────────
+interface NeonProduct { barcode: string; name: string | null; created_at: string; }
+interface NeonEntry { id: string; barcode: string; store: string; price_pence: number; recorded_at: string; source: string; }
 
-interface NeonProduct {
-  barcode: string;
-  name: string | null;
-  created_at: string;
-}
-
-interface NeonPriceEntry {
-  id: string;
-  barcode: string;
-  store: string;
-  price_pence: number;
-  recorded_at: string;
-  source: string;
-}
-
-// ── Mappers ──────────────────────────────────────────────────────────────────
-
-function toNeonProduct(p: Product): NeonProduct {
-  return { barcode: p.barcode, name: p.name ?? null, created_at: p.createdAt };
-}
-
-function fromNeonProduct(p: NeonProduct): Product {
-  return { barcode: p.barcode, name: p.name ?? undefined, createdAt: p.created_at };
-}
-
-function toNeonEntry(e: PriceEntry): NeonPriceEntry {
-  return {
-    id: e.id,
-    barcode: e.barcode,
-    store: e.store,
-    price_pence: e.pricePence,
-    recorded_at: e.recordedAt,
-    source: e.source,
-  };
-}
-
-function fromNeonEntry(e: NeonPriceEntry): PriceEntry {
-  return {
-    id: e.id,
-    barcode: e.barcode,
-    store: e.store,
-    pricePence: e.price_pence,
-    recordedAt: e.recorded_at,
-    source: e.source as 'ocr' | 'manual',
-  };
-}
-
-// ── Single-item push (fire-and-forget after local save) ─────────────────────
-
-/** Upsert one product to Neon. Safe to call without awaiting. */
 export async function pushProduct(product: Product): Promise<void> {
-  const client = getNeonClient();
-  if (!client) return;
+  const sql = getNeonSql();
+  if (!sql) return;
   try {
-    await client
-      .from('products')
-      .upsert(toNeonProduct(product) as never, { onConflict: 'barcode' });
-  } catch {
-    // best-effort — offline or misconfigured, ignore
-  }
+    await sql`
+      INSERT INTO products (barcode, name, created_at)
+      VALUES (${product.barcode}, ${product.name ?? null}, ${product.createdAt})
+      ON CONFLICT (barcode) DO UPDATE SET name = EXCLUDED.name
+    `;
+  } catch { /* best-effort */ }
 }
 
-/** Upsert one price entry to Neon. Safe to call without awaiting. */
 export async function pushPriceEntry(entry: PriceEntry): Promise<void> {
-  const client = getNeonClient();
-  if (!client) return;
+  const sql = getNeonSql();
+  if (!sql) return;
   try {
-    await client
-      .from('price_entries')
-      .upsert(toNeonEntry(entry) as never, { onConflict: 'id' });
-  } catch {
-    // best-effort — offline or misconfigured, ignore
-  }
+    await sql`
+      INSERT INTO price_entries (id, barcode, store, price_pence, recorded_at, source)
+      VALUES (${entry.id}, ${entry.barcode}, ${entry.store}, ${entry.pricePence}, ${entry.recordedAt}, ${entry.source})
+      ON CONFLICT (id) DO NOTHING
+    `;
+  } catch { /* best-effort */ }
 }
 
-// ── One-time migration: push all local data to Neon ─────────────────────────
-
-/** Push all IndexedDB rows to Neon. Runs once per Neon endpoint. */
 export async function migrateLocalToNeon(): Promise<void> {
   if (!isNeonConfigured() || wasNeonMigrated()) return;
-  const client = getNeonClient()!;
-
+  const sql = getNeonSql()!;
   const [products, entries] = await Promise.all([
     db.products.toArray(),
     db.priceEntries.toArray(),
   ]);
-
-  const BATCH = 50;
-  for (let i = 0; i < products.length; i += BATCH) {
-    const batch = products.slice(i, i + BATCH).map(toNeonProduct);
-    await client.from('products').upsert(batch as never, { onConflict: 'barcode' });
+  for (const p of products) {
+    await sql`
+      INSERT INTO products (barcode, name, created_at)
+      VALUES (${p.barcode}, ${p.name ?? null}, ${p.createdAt})
+      ON CONFLICT (barcode) DO UPDATE SET name = EXCLUDED.name
+    `;
   }
-  for (let i = 0; i < entries.length; i += BATCH) {
-    const batch = entries.slice(i, i + BATCH).map(toNeonEntry);
-    await client.from('price_entries').upsert(batch as never, { onConflict: 'id' });
+  for (const e of entries) {
+    await sql`
+      INSERT INTO price_entries (id, barcode, store, price_pence, recorded_at, source)
+      VALUES (${e.id}, ${e.barcode}, ${e.store}, ${e.pricePence}, ${e.recordedAt}, ${e.source})
+      ON CONFLICT (id) DO NOTHING
+    `;
   }
-
   markNeonMigrated();
 }
 
-// ── Pull Neon → merge into IndexedDB ────────────────────────────────────────
-
-/** Pull remote rows newer than last sync and upsert into local IndexedDB. */
 export async function pullAndMerge(): Promise<void> {
   if (!isNeonConfigured()) return;
-  const client = getNeonClient()!;
+  const sql = getNeonSql()!;
   const since = getLastSyncTime();
   const syncStart = new Date().toISOString();
 
-  const prodReq = since
-    ? client.from('products').select('*').gt('created_at', since)
-    : client.from('products').select('*');
-  const { data: rawProducts, error: prodErr } = await prodReq;
-  if (prodErr) throw prodErr;
+  const products = since
+    ? (await sql`SELECT barcode, name, created_at FROM products WHERE created_at > ${since}`) as NeonProduct[]
+    : (await sql`SELECT barcode, name, created_at FROM products`) as NeonProduct[];
 
-  const entryReq = since
-    ? client.from('price_entries').select('*').gt('recorded_at', since)
-    : client.from('price_entries').select('*');
-  const { data: rawEntries, error: entryErr } = await entryReq;
-  if (entryErr) throw entryErr;
+  const entries = since
+    ? (await sql`SELECT id, barcode, store, price_pence, recorded_at, source FROM price_entries WHERE recorded_at > ${since}`) as NeonEntry[]
+    : (await sql`SELECT id, barcode, store, price_pence, recorded_at, source FROM price_entries`) as NeonEntry[];
 
-  const remoteProducts = (rawProducts ?? []) as NeonProduct[];
-  const remoteEntries = (rawEntries ?? []) as NeonPriceEntry[];
-
-  // Write directly to IndexedDB — do NOT call pushProduct/pushPriceEntry
-  // here to avoid a sync loop
-  for (const p of remoteProducts) {
-    await db.products.put(fromNeonProduct(p));
+  for (const p of products) {
+    await db.products.put({ barcode: p.barcode, name: p.name ?? undefined, createdAt: p.created_at });
   }
-  for (const e of remoteEntries) {
-    await db.priceEntries.put(fromNeonEntry(e));
+  for (const e of entries) {
+    await db.priceEntries.put({
+      id: e.id, barcode: e.barcode, store: e.store,
+      pricePence: e.price_pence, recordedAt: e.recorded_at,
+      source: e.source as 'ocr' | 'manual',
+    });
   }
-
   setLastSyncTime(syncStart);
 }
 
-// ── Startup sync ─────────────────────────────────────────────────────────────
-
-/** Called once on app mount. Migrates local data then pulls remote changes. */
 export async function syncOnStartup(): Promise<void> {
   if (!isNeonConfigured() || !navigator.onLine) return;
   try {
     await migrateLocalToNeon();
     await pullAndMerge();
-  } catch {
-    // best-effort — don't block the app
-  }
+  } catch { /* best-effort */ }
 }
