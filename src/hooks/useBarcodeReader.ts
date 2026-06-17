@@ -32,16 +32,7 @@ export function useBarcodeReader({ videoRef, onDetected, enabled }: UseBarcodeRe
     if (!videoEl) return;
 
     const hints = new Map<DecodeHintType, unknown>();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A,
-      BarcodeFormat.UPC_E,
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.QR_CODE,
-    ]);
-    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.EAN_13]);
 
     const reader = new BrowserMultiFormatReader(hints);
     readerRef.current = reader;
